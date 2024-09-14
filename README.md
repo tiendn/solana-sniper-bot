@@ -8,6 +8,7 @@
 
 
 **SoaR Sniper Bot** that listens to new Raydium USDC or SOL pools and buys tokens for a fixed amount in USDC/SOL.
+If you follow the instructions in the Readme file, no errors should occur.
 
 > *Depending on the speed of the RPC node, the purchase usually happens before the token is available on Raydium UI for swapping.*
 
