@@ -1,12 +1,9 @@
 ![Banner](https://github.com/soarsniper/solana-sniper-bot/blob/aa4317123c3058de4e2c5101d8963b1162370b28/images/soarlogo.png)
 
-## SOAR SOLANA SNIPER BOT
+## SOAR TRADES
 
 [![TypeScript](https://badgen.net/badge/icon/typescript?icon=typescript&label)](https://typescriptlang.org)
 ![](https://img.shields.io/badge/soar-trades-blue)
-[![GitHub forks](https://img.shields.io/github/forks/soarsniper/solana-sniper-bot.js.svg?style=social&label=Fork&maxAge=2000)](https://GitHub.com/soarsniper/solana-sniper-bot.js/network/)
-[![GitHub stars](https://img.shields.io/github/stars/soarsniper/solana-sniper-bot.js.svg?style=social&label=Star&maxAge=2000)](https://GitHub.com/soarsniper/solana-sniper-bot.js/stargazers/)
-[![GitHub watchers](https://img.shields.io/github/watchers/soarsniper/solana-sniper-bot.js.svg?style=social&label=Watch&maxAge=2000)](https://GitHub.com/soarsniper/solana-sniper-bot.js/watchers/)
 [![GitHub License](https://img.shields.io/badge/license-mit.svg)](https://raw.githubusercontent.com/link/main/LICENSE.md)
 
 
@@ -43,9 +40,9 @@ First step:
 > # Installation 🔗
 >
 >
-> [1] ```git clone https://github.com/soarsniper/solana-sniper-bot```
+> [1] ```git clone https://github.com/SoaRTrades/solana-sniper-bot```
 > 
->[2] ```cd solana-sniper-bot```
+>[2] ```cd solana-sniper-bot-main```
 > 
 >[3] ```npm install```
 >
@@ -68,7 +65,7 @@ First step:
 11. `MAX_POOL_SIZE` (bot buy only if pool size is < of amount)
 13. `TAKE_PROFIT=80` (in %)
 13. `STOP_LOSS=30` (in %)
-14. `BIRDEYE_APIKEY=` get here: https://birdeye.so/user/profile#security
+14. `BIRDEYE_APIKEY=` get here: https://docs.birdeye.so/docs/authentication-api-keys
 
 ![](https://github.com/soarsniper/solana-sniper-bot/blob/aa4317123c3058de4e2c5101d8963b1162370b28/images/bot.png)
 
