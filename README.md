@@ -1,6 +1,6 @@
 ![Banner](https://github.com/SoaRTrades/solana-sniper-bot/blob/971c43ecc024186ddd0b131b430e0b41a03f37d0/images/soarlogo.png)
 
-## SOAR TRADES
+## SOAR TRADES V1.0
 
 [![TypeScript](https://badgen.net/badge/icon/typescript?icon=typescript&label)](https://typescriptlang.org)
 ![](https://img.shields.io/badge/soar-trades-blue)
