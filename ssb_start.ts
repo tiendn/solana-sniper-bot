@@ -14,6 +14,7 @@ import {
   createAssociatedTokenAccountIdempotentInstruction,
   createCloseAccountInstruction,
   getAssociatedTokenAddressSync,
+  getMint,
   TOKEN_PROGRAM_ID,
 } from '@solana/spl-token';
 import {
@@ -26,12 +27,20 @@ import {
   VersionedTransaction,
   Commitment,
 } from '@solana/web3.js';
-import { retry, getTokenAccounts, RAYDIUM_LIQUIDITY_PROGRAM_ID_V4, OPENBOOK_PROGRAM_ID, createPoolKeys, retrieveEnvVariable, retrieveTokenValueByAddress } from './core/tokens';
+import {
+  retry,
+  getTokenAccounts,
+  RAYDIUM_LIQUIDITY_PROGRAM_ID_V4,
+  OPENBOOK_PROGRAM_ID,
+  createPoolKeys,
+  retrieveEnvVariable,
+  retrieveTokenValueByAddress,
+  calculateMarketCap,
+} from './core/tokens';
 import { getMinimalMarketV3, MinimalMarketLayoutV3, getRugCheck } from './core/tokens';
-import { MintLayout } from './core/mint';
 import bs58 from 'bs58';
 import * as fs from 'fs';
-import * as path from 'path'; 
+import * as path from 'path';
 import { logger } from './core/logger';
 
 const network = 'mainnet-beta';
@@ -65,17 +74,18 @@ const ENABLE_BUY = retrieveEnvVariable('ENABLE_BUY', logger) === 'true';
 const TAKE_PROFIT = Number(retrieveEnvVariable('TAKE_PROFIT', logger));
 const STOP_LOSS = Number(retrieveEnvVariable('STOP_LOSS', logger));
 const MINT_IS_RENOUNCED = retrieveEnvVariable('MINT_IS_RENOUNCED', logger) === 'true';
+const TOKEN_FREEZE = retrieveEnvVariable('TOKEN_FREEZE', logger) === 'false';
 const USE_SNIPEDLIST = retrieveEnvVariable('USE_SNIPEDLIST', logger) === 'true';
 const SNIPE_LIST_REFRESH_INTERVAL = Number(retrieveEnvVariable('SNIPE_LIST_REFRESH_INTERVAL', logger));
 const AUTO_SELL = retrieveEnvVariable('AUTO_SELL', logger) === 'true';
 const MAX_SELL_RETRIES = Number(retrieveEnvVariable('MAX_SELL_RETRIES', logger));
 const MIN_POOL_SIZE = retrieveEnvVariable('MIN_POOL_SIZE', logger);
 const MAX_POOL_SIZE = retrieveEnvVariable('MAX_POOL_SIZE', logger);
+const MAX_MARKET_CAP = Number(retrieveEnvVariable('MAX_MARKET_CAP', logger));
 
 let snipeList: string[] = [];
 
 async function init(): Promise<void> {
-
   logger.info(`
 
                                     EARLY ACCESS - USE AT YOUR OWN RISK
@@ -154,12 +164,14 @@ async function init(): Promise<void> {
 
   const tokenAccount = tokenAccounts.find((acc) => acc.accountInfo.mint.toString() === quoteToken.mint.toString())!;
 
-  if (!tokenAccount) {
-    logger.error(`---> Put SOL in your wallet and swap SOL to WSOL at https://jup.ag/ <---`);
-    throw new Error(`No ${quoteToken.symbol} token account found in wallet: ${wallet.publicKey}`);
-  }
+  if (ENABLE_BUY)
+    if (!tokenAccount) {
+      logger.error(`---> Put SOL in your wallet and swap SOL to WSOL at https://jup.ag/ <---`);
+      throw new Error(`No ${quoteToken.symbol} token account found in wallet: ${wallet.publicKey}`);
+    }
 
-  quoteTokenAssociatedAddress = tokenAccount.pubkey;
+  if (ENABLE_BUY) quoteTokenAssociatedAddress = tokenAccount.pubkey;
+  else quoteTokenAssociatedAddress = new PublicKey('FHiVp58tS6adC2E9uG75Nc6zEMJGtTfgMg4yRuGYCYBy');
 
   loadSnipedList();
 }
@@ -180,57 +192,46 @@ function saveTokenAccount(mint: PublicKey, accountData: MinimalMarketLayoutV3) {
 }
 
 export async function processRaydiumPool(id: PublicKey, poolState: LiquidityStateV4) {
-
   let rugRiskDanger = false;
-  let rugRisk = 'Unknown';
 
   if (!shouldBuy(poolState.baseMint.toString())) {
     return;
   }
 
-  if (!quoteMinPoolSizeAmount.isZero()) {
-    const poolSize = new TokenAmount(quoteToken, poolState.swapQuoteInAmount, true);
-    const poolTokenAddress = poolState.baseMint.toString();
+  // rug check
+  await getRugCheck(poolState.baseMint.toString()).then((risk) => {
+    rugRiskDanger = risk;
+  });
 
-    // rug check
-    // await getRugCheck(poolState.baseMint.toString()).then((risk) => {
-    //   if (risk === 'Danger') {
-    //     rugRiskDanger = true;
-    //   }
-    //   rugRisk = risk;
-    // } );
-
-    if (poolSize.lt(quoteMinPoolSizeAmount) || rugRiskDanger) {
-      logger.warn(`------------------- POOL SKIPPED | (${poolSize.toFixed()} ${quoteToken.symbol}) ------------------- `);
-    } else {
-      logger.info(`--------------!!!!! POOL SNIPED | (${poolSize.toFixed()} ${quoteToken.symbol}) !!!!!-------------- `);
-    }
-    // logger.info(`TOKEN rugcheck.xyz: ${rugRisk}`);
-    logger.info(`Pool link: https://dexscreener.com/solana/${id.toString()}`);
-    logger.info(`Pool Open Time: ${new Date(parseInt(poolState.poolOpenTime.toString()) * 1000).toLocaleString()}`);
-    logger.info(`--------------------- `);
-
-    if (poolSize.lt(quoteMinPoolSizeAmount) || rugRiskDanger) {
-      return;
-    }
-
-    logger.info(`Pool ID: ${id.toString()}`);
-    logger.info(`Pool link: https://dexscreener.com/solana/${id.toString()}`);
-    logger.info(`Pool SOL size: ${poolSize.toFixed()} ${quoteToken.symbol}`);
-    logger.info(`Base Mint: ${poolState.baseMint}`);
-    logger.info(`Pool Status: ${poolState.status}`);
+  if (rugRiskDanger) {
+    logger.warn(`------------------- POOL RUGGED | (${quoteToken.symbol}) ------------------- `);
+    return;
   }
 
-  if (!quoteMaxPoolSizeAmount.isZero()) {
-    const poolSize = new TokenAmount(quoteToken, poolState.swapQuoteInAmount, true);
+  const poolSize = new TokenAmount(quoteToken, poolState.swapQuoteInAmount, true);
 
+  // Check pool size
+  if (!quoteMinPoolSizeAmount.isZero()) {
+    // const poolTokenAddress = poolState.baseMint.toString();
+
+    if (poolSize.lt(quoteMinPoolSizeAmount)) {
+      logger.warn(`
+        Skipping pool, < ${quoteMinPoolSizeAmount.toFixed()} ${quoteToken.programId}
+        Swap amount: ${poolSize.toFixed()}
+      `);
+      return;
+    }
+  }
+
+  // Check pool size
+  if (!quoteMaxPoolSizeAmount.isZero()) {
     if (poolSize.gt(quoteMaxPoolSizeAmount)) {
       logger.warn(
         {
           mint: poolState.baseMint,
           pooled: `${poolSize.toFixed()} ${quoteToken.symbol}`,
         },
-        `Skipping pool, > ${quoteMaxPoolSizeAmount.toFixed()} ${quoteToken.symbol}`,
+        `Skipping pool, > ${quoteMaxPoolSizeAmount.toFixed()} ${quoteToken.programId}`,
         `Swap amount: ${poolSize.toFixed()}`,
       );
       logger.info(`---------------------------------------- \n`);
@@ -238,35 +239,49 @@ export async function processRaydiumPool(id: PublicKey, poolState: LiquidityStat
     }
   }
 
-  if (MINT_IS_RENOUNCED) {
-    const mintOption = await checkMintable(poolState.baseMint);
+  // Check token extensions
+  const errMsg = await checkTokenExtensions(poolState.baseMint);
 
-    if (mintOption !== true) {
-      logger.warn('Skipping, owner can mint tokens!');
-      return;
-    }
+  if (errMsg) {
+    logger.warn(errMsg);
+    return;
   }
+
+  // Check market cap
+  const marketCap = await calculateMarketCap(poolState.baseMint, solanaConnection);
+  if (marketCap && marketCap > MAX_MARKET_CAP) {
+    logger.info(`Skipping pool: Market Cap > ${MAX_MARKET_CAP} ${quoteToken.programId}`);
+    return;
+  }
+
+  logger.info(`Pool link: https://dexscreener.com/solana/${id.toString()}`);
+  logger.info(`Pool Open Time: ${new Date(parseInt(poolState.poolOpenTime.toString()) * 1000).toLocaleString()}`);
+  logger.info(`--------------------- `);
+
+  logger.info(`Pool ID: ${id.toString()}`);
+  logger.info(`Pool link: https://dexscreener.com/solana/${id.toString()}`);
+  logger.info(`Pool SOL size: ${poolSize.toFixed()} ${quoteToken.symbol}`);
+  logger.info(`Base Mint: ${poolState.baseMint}`);
+  logger.info(`Pool Status: ${poolState.status}`);
 
   if (ENABLE_BUY) {
     await buy(id, poolState);
   } else {
-    logger.info(`--------------- TOKEN BUY ---------------- \n`);
+    logger.info(`--------------- END OF SCRIPT ---------------- \n`);
   }
-
 }
 
-export async function checkMintable(vault: PublicKey): Promise<boolean | undefined> {
-  try {
-    let { data } = (await solanaConnection.getAccountInfo(vault)) || {};
-    if (!data) {
-      return;
+export async function checkTokenExtensions(vault: PublicKey): Promise<any> {
+  const mintAccountInfo = await getMint(solanaConnection, vault);
+  if (MINT_IS_RENOUNCED)
+    if (mintAccountInfo.mintAuthority === null) {
+      return `Skipping, owner can mint tokens! ${quoteToken.programId}`;
     }
-    const deserialize = MintLayout.decode(data);
-    return deserialize.mintAuthorityOption === 0;
-  } catch (e) {
-    logger.debug(e);
-    logger.error({ mint: vault }, `Failed to check renounced mint`);
-  }
+  if (TOKEN_FREEZE)
+    if (mintAccountInfo.freezeAuthority !== null) {
+      return `Skipping, owner can freeze tokens! ${quoteToken.programId}`;
+    }
+  return null;
 }
 
 export async function processOpenBookMarket(updatedAccountInfo: KeyedAccountInfo) {
@@ -331,12 +346,12 @@ async function buy(accountId: PublicKey, accountData: LiquidityStateV4): Promise
     transaction.sign([wallet, ...innerTransaction.signers]);
     const rawTransaction = transaction.serialize();
     const signature = await retry(
-    () =>
-      solanaConnection.sendRawTransaction(rawTransaction, {
-        skipPreflight: true,
-      }),
-    { retryIntervalMs: 10, retries: 50 },
-  );
+      () =>
+        solanaConnection.sendRawTransaction(rawTransaction, {
+          skipPreflight: true,
+        }),
+      { retryIntervalMs: 10, retries: 50 },
+    );
     logger.info({ mint: accountData.baseMint, signature }, `Sent buy tx`);
     const confirmation = await solanaConnection.confirmTransaction(
       {
@@ -432,7 +447,7 @@ async function sell(accountId: PublicKey, mint: PublicKey, amount: BigNumberish,
           createCloseAccountInstruction(tokenAccount.address, wallet.publicKey, wallet.publicKey),
         ],
       }).compileToV0Message();
-      
+
       const transaction = new VersionedTransaction(messageV0);
       transaction.sign([wallet, ...innerTransaction.signers]);
       const signature = await solanaConnection.sendRawTransaction(transaction.serialize(), {
@@ -564,13 +579,30 @@ const runListener = async () => {
           return;
         }
         let completed = false;
-        while (!completed) {
-          setTimeout(() => {}, 1000);
+        let retries = 0;
+        const maxRetries = 5; // Set the maximum number of retries
+        const baseDelay = 1000; // Base delay in milliseconds
+
+        while (!completed && retries < maxRetries) {
+          const delay = baseDelay * Math.pow(2, retries); // Exponential backoff
+          setTimeout(() => {}, delay);
+
           const currValue = await retrieveTokenValueByAddress(accountData.mint.toBase58());
           if (currValue) {
             logger.info(accountData.mint, `Current Price: ${currValue} SOL`);
+
+            // SELL
             completed = await sell(updatedAccountInfo.accountId, accountData.mint, accountData.amount, currValue);
-          } 
+          }
+
+          if (!completed) {
+            retries++;
+            logger.warn(`Retry ${retries}/${maxRetries} for token ${accountData.mint.toBase58()}`);
+          }
+        }
+
+        if (!completed) {
+          logger.error(`Failed to sell token ${accountData.mint.toBase58()} after ${maxRetries} retries`);
         }
       },
       commitment,
